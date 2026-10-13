@@ -32,7 +32,7 @@ const Layout = () => {
     </div>
   ) : (
     <div className='flex items-center justify-center h-screen'>
-      <SignIn />
+      <SignIn fallbackRedirectUrl='/ai' signUpFallbackRedirectUrl='/ai' />
     </div>
   )
 }

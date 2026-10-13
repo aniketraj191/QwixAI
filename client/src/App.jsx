@@ -12,6 +12,7 @@ import ReviewResume from './pages/ReviewResume'
 import Community from './pages/Community'
 import About from './pages/About'
 import { Toaster } from 'react-hot-toast'
+import { AuthenticateWithRedirectCallback } from '@clerk/clerk-react'
 
 const App = () => {
   return (
@@ -20,6 +21,7 @@ const App = () => {
       <Routes>
         <Route path='/' element={<Home />} />
         <Route path='/about' element={<About />} />
+        <Route path='/sso-callback' element={<AuthenticateWithRedirectCallback />} />
 
         <Route path='/ai' element={<Layout />}>
           <Route index element={<Dashboard />} />

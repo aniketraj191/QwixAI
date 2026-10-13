@@ -5,12 +5,31 @@ import { v2 as cloudinary } from "cloudinary";
 import fs from "fs";
 import pdf from "pdf-parse/lib/pdf-parse.js";
 
+import { saveLocalCreation } from "../configs/localDb.js";
+
 const AI = new OpenAI({
   apiKey: process.env.GROQ_API_KEY,
   baseURL: "https://api.groq.com/openai/v1",
 });
 
-const TEXT_MODEL = "llama-3.1-8b-instant";
+const TEXT_MODEL = process.env.GROQ_MODEL || "qwen/qwen3.8-27b";
+
+const saveCreation = async (userId, prompt, content, type, publish = false) => {
+  const dbUrl = process.env.DATABASE_URL;
+  if (!dbUrl || dbUrl.includes("your_postgres_connection_string")) {
+    saveLocalCreation({ user_id: userId, prompt, content, type, publish });
+    return;
+  }
+  try {
+    await sql.query(
+      "INSERT INTO creations (user_id, prompt, content, type, publish) VALUES ($1, $2, $3, $4, $5)",
+      [userId, prompt, content, type, publish]
+    );
+  } catch (error) {
+    console.warn("⚠️ Database error saving creation, saving locally:", error.message);
+    saveLocalCreation({ user_id: userId, prompt, content, type, publish });
+  }
+};
 
 export const generateArticle = async (req, res) => {
   try {
@@ -36,10 +55,7 @@ export const generateArticle = async (req, res) => {
 
     const content = response.choices[0].message.content;
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type) VALUES ($1, $2, $3, $4)",
-      [userId, prompt, content, "article"]
-    );
+    await saveCreation(userId, prompt, content, "article");
 
     res.json({ success: true, content });
   } catch (error) {
@@ -72,10 +88,7 @@ export const generateBlogTitle = async (req, res) => {
 
     const content = response.choices[0].message.content;
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type) VALUES ($1, $2, $3, $4)",
-      [userId, prompt, content, "blog-title"]
-    );
+    await saveCreation(userId, prompt, content, "blog-title");
 
     res.json({ success: true, content });
   } catch (error) {
@@ -89,29 +102,57 @@ export const generateImage = async (req, res) => {
     const { userId } = req.auth();
     const { prompt, publish } = req.body;
 
-    const formData = new FormData();
-    formData.append("prompt", prompt);
+    let imageBuffer;
 
-    const { data } = await axios.post(
-      "https://clipdrop-api.co/text-to-image/v1",
-      formData,
-      {
-        headers: { "x-api-key": process.env.CLIPDROP_API_KEY },
-        responseType: "arraybuffer",
+    // Try Clipdrop if API key is provided and has credits
+    if (
+      process.env.CLIPDROP_API_KEY &&
+      !process.env.CLIPDROP_API_KEY.includes("your_clipdrop_api_key")
+    ) {
+      try {
+        const formData = new FormData();
+        formData.append("prompt", prompt);
+
+        const { data } = await axios.post(
+          "https://clipdrop-api.co/text-to-image/v1",
+          formData,
+          {
+            headers: { "x-api-key": process.env.CLIPDROP_API_KEY },
+            responseType: "arraybuffer",
+          }
+        );
+        imageBuffer = data;
+      } catch (clipdropErr) {
+        console.warn(
+          "Clipdrop API credit limit reached or error (Status: " +
+            (clipdropErr.response?.status || clipdropErr.message) +
+            "). Falling back to free Pollinations AI generator..."
+        );
       }
-    );
+    }
 
-    const base64Image = `data:image/png;base64,${Buffer.from(
-      data,
+    // Free AI Image Generation Fallback (no credit limit)
+    if (!imageBuffer) {
+      const pollinationsUrl = `https://image.pollinations.ai/prompt/${encodeURIComponent(
+        prompt
+      )}?width=1024&height=1024&nologo=true&seed=${Math.floor(
+        Math.random() * 1000000
+      )}`;
+      const { data } = await axios.get(pollinationsUrl, {
+        responseType: "arraybuffer",
+        timeout: 25000,
+      });
+      imageBuffer = data;
+    }
+
+    const base64Image = `data:image/jpeg;base64,${Buffer.from(
+      imageBuffer,
       "binary"
     ).toString("base64")}`;
 
     const { secure_url } = await cloudinary.uploader.upload(base64Image);
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type, publish) VALUES ($1, $2, $3, $4, $5)",
-      [userId, prompt, secure_url, "image", publish ?? false]
-    );
+    await saveCreation(userId, prompt, secure_url, "image", publish ?? false);
 
     res.json({ success: true, content: secure_url });
   } catch (error) {
@@ -141,10 +182,7 @@ export const removeImageBackground = async (req, res) => {
       ],
     });
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type) VALUES ($1, $2, $3, $4)",
-      [userId, "Remove background from image", secure_url, "image"]
-    );
+    await saveCreation(userId, "Remove background from image", secure_url, "image");
 
     res.json({ success: true, content: secure_url });
   } catch (error) {
@@ -180,10 +218,7 @@ export const removeImageObject = async (req, res) => {
       resource_type: "image",
     });
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type) VALUES ($1, $2, $3, $4)",
-      [userId, `Removed ${object} from image`, imageUrl, "image"]
-    );
+    await saveCreation(userId, `Removed ${object} from image`, imageUrl, "image");
 
     res.json({ success: true, content: imageUrl });
   } catch (error) {
@@ -246,10 +281,7 @@ ${pdfData.text}
 
     const content = response.choices[0].message.content;
 
-    await sql.query(
-      "INSERT INTO creations (user_id, prompt, content, type) VALUES ($1, $2, $3, $4)",
-      [userId, "Review the uploaded resume", content, "resume-review"]
-    );
+    await saveCreation(userId, "Review the uploaded resume", content, "resume-review");
 
     res.json({ success: true, content });
   } catch (error) {
